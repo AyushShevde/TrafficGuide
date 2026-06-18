@@ -914,11 +914,11 @@ function App() {
     activeEvents.forEach((event) => {
       if (event.latitude == null || event.longitude == null) return;
       const marker = L.circleMarker([event.latitude, event.longitude], {
-        radius: 8,
-        color: priorityClass(event.priority) === "high" ? "#ff4d4d" : "#818894",
-        fillColor: priorityClass(event.priority) === "high" ? "#ff4d4d" : "#818894",
-        fillOpacity: 0.86,
-        weight: 2,
+        radius: priorityClass(event.priority) === "high" ? 9 : 7,
+        color: "#ffffff",
+        fillColor: priorityClass(event.priority) === "high" ? "#ff3b30" : "#6b7684",
+        fillOpacity: 0.94,
+        weight: 2.5,
       });
       marker.bindTooltip(`${event.event_cause || "Active event"} · ${event.priority || "Priority pending"}`);
       marker.on("click", () => fetchForecast({ ...event, source: "active" }));
@@ -951,9 +951,9 @@ function App() {
       const radius = 200 + Math.max(0, Math.min(1, risk)) * 600;
       L.circle([selectedEvent.latitude, selectedEvent.longitude], {
         radius,
-        color: "#f3b23f",
-        fillColor: "#f3b23f",
-        fillOpacity: 0.12,
+        color: "#ff9f0a",
+        fillColor: "#ff9f0a",
+        fillOpacity: 0.16,
         weight: 2,
       }).addTo(overlays);
       map.flyTo([selectedEvent.latitude, selectedEvent.longitude], Math.max(map.getZoom(), 13), {
@@ -965,7 +965,7 @@ function App() {
       const coordinates = (route.path || []).map((point) => [point.lat, point.lon]);
       if (coordinates.length < 2) return;
       L.polyline(coordinates, {
-        color: index === 0 ? "#35b6ff" : "#6adf99",
+        color: index === 0 ? "#0a84ff" : "#32d74b",
         weight: index === 0 ? 5 : 4,
         opacity: 0.82,
       }).addTo(routes);
@@ -976,6 +976,9 @@ function App() {
   const metricAccuracy = metrics.forecast_accuracy_30d == null ? "n/a" : `${formatNumber(metrics.forecast_accuracy_30d)}%`;
   const roiUtilization = `${Math.round((roiMetrics.personnel_utilization || 0) * 100)}%`;
   const roiAcceptance = `${Math.round((roiMetrics.plan_acceptance_rate || 0) * 100)}%`;
+  const highActiveCount = activeEvents.filter((event) => priorityClass(event.priority) === "high").length;
+  const selectedRisk = forecast?.risk_score == null ? "--" : `${Math.round((forecast.risk_score || 0) * 100)}%`;
+  const selectedTitle = selectedEvent ? markerTitle(selectedEvent) : "No event selected";
 
   return (
     <main className="console-shell">
@@ -1035,6 +1038,37 @@ function App() {
             </div>
           </div>
           <div id="traffic-map" className="traffic-map" />
+          <div className="map-hud" aria-label="Map status">
+            <div>
+              <span>High Active</span>
+              <strong>{formatNumber(highActiveCount)}</strong>
+            </div>
+            <div>
+              <span>Planned</span>
+              <strong>{formatNumber(plannedEvents.length)}</strong>
+            </div>
+            <div>
+              <span>Selected Risk</span>
+              <strong>{selectedRisk}</strong>
+            </div>
+            <p>{selectedTitle}</p>
+          </div>
+          <div className="map-action-stack" aria-label="Map controls">
+            <button
+              type="button"
+              className="map-icon-button recenter"
+              aria-label="Recenter map"
+              title="Recenter map"
+              onClick={() => mapRef.current?.setView(BENGALURU_CENTER, 12)}
+            />
+            <button
+              type="button"
+              className="map-icon-button clear"
+              aria-label="Clear route overlays"
+              title="Clear route overlays"
+              onClick={() => layersRef.current.routes.clearLayers()}
+            />
+          </div>
           <div className="map-legend">
             <span><i className="legend-dot high"></i>High active</span>
             <span><i className="legend-dot low"></i>Low active</span>
