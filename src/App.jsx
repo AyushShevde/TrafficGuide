@@ -98,6 +98,23 @@ function formatMeters(value) {
   return `${Math.round(meters)} m`;
 }
 
+function routeLatLngs(route) {
+  return (route?.path || [])
+    .map((point) => [Number(point.lat), Number(point.lon)])
+    .filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
+}
+
+function routeColor(index, isSelected) {
+  if (isSelected) return "#007aff";
+  return ["#30d158", "#ff9f0a", "#bf5af2"][index % 3];
+}
+
+function routeQualityLabel(route) {
+  const score = Number(route?.route_quality_score);
+  if (!Number.isFinite(score)) return "n/a";
+  return `${Math.round(score * 100)}%`;
+}
+
 function MetricCard({ label, value, accent }) {
   return (
     <section className={`metric-card ${accent || ""}`}>
@@ -487,10 +504,15 @@ function DetailDrawer({
   plan,
   loadingForecast,
   loadingPlan,
+  selectedRouteRank,
   onClose,
   onGetPlan,
+  onSelectRoute,
   onAccept,
   onAdjust,
+  planReady,
+  planPreparing,
+  feedbackSubmitting,
 }) {
   const [adjusting, setAdjusting] = useState(false);
   const [adjustedPersonnel, setAdjustedPersonnel] = useState("");
@@ -572,7 +594,13 @@ function DetailDrawer({
         onClick={onGetPlan}
         disabled={loadingPlan || !forecast}
       >
-        {loadingPlan ? "Building plan..." : "Get recommended plan"}
+        {loadingPlan
+          ? "Building plan..."
+          : planReady
+            ? "Show recommended plan"
+            : planPreparing
+              ? "Preparing recommendation..."
+              : "Get recommended plan"}
       </button>
 
       {plan && (
@@ -623,7 +651,7 @@ function DetailDrawer({
                     <div className="control-point-metrics">
                       <span>{point.personnel_needed || 0} officers</span>
                       <span>{point.barricades_needed || 0} barricades</span>
-                      <span>{point.lane_estimate || 1} lane proxy</span>
+                      <span>{point.lane_estimate || 1} lane estimate</span>
                       {point.is_arterial && <span>arterial</span>}
                     </div>
                     <ul className="reasoning-list">
@@ -653,19 +681,36 @@ function DetailDrawer({
               <p className="muted">No alternate route returned.</p>
             ) : (
               plan.diversions.map((route) => (
-                <div className="diversion-row" key={`${route.source_node_id}-${route.target_node_id}-${route.rank}`}>
-                  <strong>Route {route.rank}</strong>
-                  <span>+{formatMeters(route.added_length_m || 0)}</span>
-                </div>
+                <button
+                  type="button"
+                  className={`diversion-row ${selectedRouteRank === route.rank ? "selected" : ""}`}
+                  key={`${route.source_node_id}-${route.target_node_id}-${route.rank}`}
+                  onClick={() => onSelectRoute(route.rank)}
+                >
+                  <span className="route-title">
+                    <strong>Route {route.rank}</strong>
+                    <i>{routeQualityLabel(route)} quality</i>
+                  </span>
+                  <span className="route-distance">+{formatMeters(route.added_length_m || 0)}</span>
+                  <small>
+                    {route.fallback_reason ? "advisory · " : ""}
+                    {formatMeters(route.diversion_length_m || 0)} total · max risk {Math.round((route.max_corridor_risk || 0) * 100)}%
+                  </small>
+                </button>
               ))
             )}
           </div>
 
           <div className="feedback-actions">
-            <button type="button" className="accept-button" onClick={onAccept}>
-              Accept plan
+            <button type="button" className="accept-button" onClick={onAccept} disabled={feedbackSubmitting}>
+              {feedbackSubmitting ? "Submitting..." : "Accept plan"}
             </button>
-            <button type="button" className="secondary-button" onClick={() => setAdjusting((open) => !open)}>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => setAdjusting((open) => !open)}
+              disabled={feedbackSubmitting}
+            >
               Adjust
             </button>
           </div>
@@ -689,7 +734,7 @@ function DetailDrawer({
                   placeholder={String(plan.total_personnel || 0)}
                   required
                 />
-                <button type="submit">Submit</button>
+                <button type="submit" disabled={feedbackSubmitting}>Submit</button>
               </div>
             </form>
           )}
@@ -729,8 +774,16 @@ function App() {
   const [timeline, setTimeline] = useState("T-24h");
   const [toast, setToast] = useState(null);
   const [apiStatus, setApiStatus] = useState("connecting");
+  const [selectedRouteRank, setSelectedRouteRank] = useState(null);
+  const [prefetchedPlanIds, setPrefetchedPlanIds] = useState(() => new Set());
+  const [preparingPlanIds, setPreparingPlanIds] = useState(() => new Set());
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
 
   const mapRef = useRef(null);
+  const initializedTimelineRef = useRef(false);
+  const feedbackSubmittingRef = useRef(false);
+  const planCacheRef = useRef(new Map());
+  const planPrefetchRef = useRef(new Map());
   const layersRef = useRef({
     markers: L.layerGroup(),
     overlays: L.layerGroup(),
@@ -777,12 +830,42 @@ function App() {
       setSelectedEvent(event);
       setForecast(null);
       setPlan(null);
+      setSelectedRouteRank(null);
       setLoadingForecast(true);
       try {
         const payload = await apiRequest(`/events/${encodeURIComponent(id)}/forecast`, {
           method: "POST",
         });
         setForecast(payload);
+        if (!planCacheRef.current.has(id) && !planPrefetchRef.current.has(id)) {
+          setPreparingPlanIds((current) => {
+            const next = new Set(current);
+            next.add(id);
+            return next;
+          });
+          const promise = apiRequest(`/events/${encodeURIComponent(id)}/plan`, {
+            method: "POST",
+          })
+            .then((planPayload) => {
+              planCacheRef.current.set(id, planPayload);
+              setPrefetchedPlanIds((current) => {
+                const next = new Set(current);
+                next.add(id);
+                return next;
+              });
+              return planPayload;
+            })
+            .catch(() => null)
+            .finally(() => {
+              planPrefetchRef.current.delete(id);
+              setPreparingPlanIds((current) => {
+                const next = new Set(current);
+                next.delete(id);
+                return next;
+              });
+            });
+          planPrefetchRef.current.set(id, promise);
+        }
       } catch (error) {
         showToast(error.message, "error");
       } finally {
@@ -795,12 +878,31 @@ function App() {
   const fetchPlan = useCallback(async () => {
     if (!selectedEvent) return;
     const id = markerEventId(selectedEvent);
+    if (planCacheRef.current.has(id)) {
+      const payload = planCacheRef.current.get(id);
+      setPlan(payload);
+      setSelectedRouteRank(payload.diversions?.[0]?.rank || null);
+      return;
+    }
     setLoadingPlan(true);
     try {
-      const payload = await apiRequest(`/events/${encodeURIComponent(id)}/plan`, {
-        method: "POST",
+      const inFlight = planPrefetchRef.current.get(id);
+      const payload = inFlight
+        ? await inFlight
+        : await apiRequest(`/events/${encodeURIComponent(id)}/plan`, {
+            method: "POST",
+          });
+      if (!payload) {
+        throw new Error("Plan is still being prepared. Try again in a moment.");
+      }
+      planCacheRef.current.set(id, payload);
+      setPrefetchedPlanIds((current) => {
+        const next = new Set(current);
+        next.add(id);
+        return next;
       });
       setPlan(payload);
+      setSelectedRouteRank(payload.diversions?.[0]?.rank || null);
     } catch (error) {
       showToast(error.message, "error");
     } finally {
@@ -808,9 +910,33 @@ function App() {
     }
   }, [selectedEvent, showToast]);
 
+  const handleTimelineChange = useCallback(
+    (state) => {
+      setTimeline(state);
+      const stageEvent = plannedEvents.find((event) => event.demo_stage === state);
+      if (stageEvent) {
+        fetchForecast({ ...stageEvent, source: "planned" });
+        return;
+      }
+      if (state === "Live") {
+        const liveEvent =
+          plannedEvents.find((event) => event.demo_stage === "Live") ||
+          activeEvents.find((event) => priorityClass(event.priority) === "high") ||
+          activeEvents[0];
+        if (liveEvent) {
+          fetchForecast({ ...liveEvent, source: liveEvent.demo_stage ? "planned" : "active" });
+        }
+      }
+    },
+    [activeEvents, fetchForecast, plannedEvents]
+  );
+
   const postFeedback = useCallback(
     async (body, successMessage) => {
       if (!selectedEvent) return;
+      if (feedbackSubmittingRef.current) return;
+      feedbackSubmittingRef.current = true;
+      setFeedbackSubmitting(true);
       const id = markerEventId(selectedEvent);
       try {
         await apiRequest(`/events/${encodeURIComponent(id)}/feedback`, {
@@ -822,6 +948,9 @@ function App() {
         showToast(successMessage, "success");
       } catch (error) {
         showToast(error.message, "error");
+      } finally {
+        feedbackSubmittingRef.current = false;
+        setFeedbackSubmitting(false);
       }
     },
     [selectedEvent, refreshMetrics, refreshRoi, showToast]
@@ -846,6 +975,14 @@ function App() {
       showToast(error.message, "error");
     });
   }, [refreshEvents, refreshMetrics, refreshRoi, showToast]);
+
+  useEffect(() => {
+    if (initializedTimelineRef.current || !plannedEvents.length) return;
+    const initialEvent = plannedEvents.find((event) => event.demo_stage === timeline);
+    if (!initialEvent) return;
+    initializedTimelineRef.current = true;
+    fetchForecast({ ...initialEvent, source: "planned" });
+  }, [fetchForecast, plannedEvents, timeline]);
 
   useEffect(() => {
     let closedByEffect = false;
@@ -945,9 +1082,11 @@ function App() {
     const routes = layersRef.current.routes;
     overlays.clearLayers();
     routes.clearLayers();
+    const boundsPoints = [];
 
     if (selectedEvent?.latitude != null && selectedEvent?.longitude != null) {
       const risk = forecast?.risk_score ?? 0;
+      boundsPoints.push([selectedEvent.latitude, selectedEvent.longitude]);
       const radius = 200 + Math.max(0, Math.min(1, risk)) * 600;
       L.circle([selectedEvent.latitude, selectedEvent.longitude], {
         radius,
@@ -956,21 +1095,76 @@ function App() {
         fillOpacity: 0.16,
         weight: 2,
       }).addTo(overlays);
+    }
+
+    (plan?.control_points || []).forEach((point, index) => {
+      if (point.lat == null || point.lon == null) return;
+      const latLng = [Number(point.lat), Number(point.lon)];
+      if (!Number.isFinite(latLng[0]) || !Number.isFinite(latLng[1])) return;
+      boundsPoints.push(latLng);
+      L.circleMarker(latLng, {
+        radius: 7,
+        color: "#ffffff",
+        fillColor: "#111827",
+        fillOpacity: 0.95,
+        weight: 2,
+      })
+        .bindTooltip(`Spot ${index + 1}: ${point.personnel_needed || 0} officers, ${point.barricades_needed || 0} barricades`)
+        .addTo(overlays);
+      L.marker(latLng, {
+        icon: L.divIcon({
+          className: "control-point-label",
+          html: `<span>${index + 1}</span>`,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11],
+        }),
+        interactive: false,
+      }).addTo(overlays);
+    });
+
+    (plan?.diversions || []).forEach((route, index) => {
+      const coordinates = routeLatLngs(route);
+      if (coordinates.length < 2) return;
+      coordinates.forEach((latLng) => boundsPoints.push(latLng));
+      const isSelected = selectedRouteRank ? route.rank === selectedRouteRank : index === 0;
+      const color = routeColor(index, isSelected);
+      L.polyline(coordinates, {
+        color: "#ffffff",
+        weight: isSelected ? 9 : 7,
+        opacity: 0.86,
+      }).addTo(routes);
+      L.polyline(coordinates, {
+        color,
+        weight: isSelected ? 6 : 4,
+        opacity: isSelected ? 0.96 : 0.78,
+        dashArray: isSelected ? null : "8 7",
+      })
+        .bindTooltip(`Route ${route.rank}: +${formatMeters(route.added_length_m || 0)} · ${routeQualityLabel(route)} quality`)
+        .addTo(routes);
+
+      const labelPoint = coordinates[Math.floor(coordinates.length / 2)];
+      L.marker(labelPoint, {
+        icon: L.divIcon({
+          className: `route-label ${isSelected ? "selected" : ""}`,
+          html: `<span>R${route.rank}</span>`,
+          iconSize: [30, 22],
+          iconAnchor: [15, 11],
+        }),
+      }).addTo(routes);
+    });
+
+    if (plan?.diversions?.length && boundsPoints.length > 1) {
+      map.fitBounds(L.latLngBounds(boundsPoints), {
+        paddingTopLeft: [28, 92],
+        paddingBottomRight: [430, 40],
+        maxZoom: 15,
+      });
+    } else if (selectedEvent?.latitude != null && selectedEvent?.longitude != null) {
       map.flyTo([selectedEvent.latitude, selectedEvent.longitude], Math.max(map.getZoom(), 13), {
         duration: 0.6,
       });
     }
-
-    (plan?.diversions || []).forEach((route, index) => {
-      const coordinates = (route.path || []).map((point) => [point.lat, point.lon]);
-      if (coordinates.length < 2) return;
-      L.polyline(coordinates, {
-        color: index === 0 ? "#0a84ff" : "#32d74b",
-        weight: index === 0 ? 5 : 4,
-        opacity: 0.82,
-      }).addTo(routes);
-    });
-  }, [selectedEvent, forecast, plan]);
+  }, [selectedEvent, forecast, plan, selectedRouteRank]);
 
   const timelineEvent = plannedEvents.find((event) => event.id === highlightedPlannedId);
   const metricAccuracy = metrics.forecast_accuracy_30d == null ? "n/a" : `${formatNumber(metrics.forecast_accuracy_30d)}%`;
@@ -1031,7 +1225,7 @@ function App() {
       <section className="workspace">
         <div className="map-panel">
           <div className="map-toolbar">
-            <TimelineToggle value={timeline} onChange={setTimeline} />
+            <TimelineToggle value={timeline} onChange={handleTimelineChange} />
             <div className="timeline-focus">
               <span>Demo focus</span>
               <strong>{timelineEvent ? timelineEvent.name : "No planned event"}</strong>
@@ -1073,6 +1267,7 @@ function App() {
             <span><i className="legend-dot high"></i>High active</span>
             <span><i className="legend-dot low"></i>Low active</span>
             <span><i className="legend-diamond"></i>Planned</span>
+            <span><i className="legend-line"></i>Diversion</span>
           </div>
         </div>
 
@@ -1082,12 +1277,18 @@ function App() {
           plan={plan}
           loadingForecast={loadingForecast}
           loadingPlan={loadingPlan}
+          selectedRouteRank={selectedRouteRank}
+          planReady={selectedEvent ? prefetchedPlanIds.has(markerEventId(selectedEvent)) : false}
+          planPreparing={selectedEvent ? preparingPlanIds.has(markerEventId(selectedEvent)) : false}
+          feedbackSubmitting={feedbackSubmitting}
           onClose={() => {
             setSelectedEvent(null);
             setForecast(null);
             setPlan(null);
+            setSelectedRouteRank(null);
           }}
           onGetPlan={fetchPlan}
+          onSelectRoute={setSelectedRouteRank}
           onAccept={() => postFeedback({ accepted: true, plan }, "Plan accepted")}
           onAdjust={(adjusted) => postFeedback({ accepted: false, adjusted_personnel: adjusted, plan }, "Adjustment submitted")}
         />

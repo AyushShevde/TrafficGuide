@@ -334,6 +334,54 @@ button {
   transform: rotate(45deg);
 }
 
+.legend-line {
+  width: 22px;
+  height: 4px;
+  display: inline-block;
+  border-radius: 999px;
+  background: #007aff;
+  box-shadow: 0 0 0 2px #ffffff;
+}
+
+.control-point-label {
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 900;
+  pointer-events: none;
+}
+
+.control-point-label span {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+}
+
+.route-label {
+  display: grid;
+  place-items: center;
+}
+
+.route-label span {
+  min-width: 30px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: #243142;
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 900;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.25);
+}
+
+.route-label.selected span {
+  background: #007aff;
+}
+
 .planned-event-icon {
   display: grid;
   place-items: center;
@@ -587,16 +635,57 @@ button {
 }
 
 .diversion-row {
-  min-height: 42px;
-  padding: 10px 0;
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  border-bottom: 1px solid #edf1f5;
+  width: 100%;
+  min-height: 66px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  border: 1px solid #e0e7ee;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1c2b3b;
+  text-align: left;
+  margin-bottom: 8px;
 }
 
 .diversion-row:last-child {
-  border-bottom: 0;
+  margin-bottom: 0;
+}
+
+.diversion-row.selected {
+  border-color: #5aa6ff;
+  background: #f0f7ff;
+  box-shadow: inset 4px 0 0 #007aff;
+}
+
+.route-title {
+  display: grid;
+  gap: 3px;
+}
+
+.route-title strong {
+  color: #172637;
+  font-size: 0.92rem;
+}
+
+.route-title i {
+  color: #5e6f82;
+  font-size: 0.75rem;
+  font-style: normal;
+  font-weight: 750;
+}
+
+.route-distance {
+  color: #0b63bf;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.diversion-row small {
+  grid-column: 1 / -1;
+  color: #647386;
+  font-weight: 720;
 }
 
 .feedback-actions {

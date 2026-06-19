@@ -32,16 +32,25 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from sqlalchemy import create_engine, text
 
+from feature_cleaning import (
+    duration_cap_for_event,
+    event_category_for_cause,
+    normalize_category,
+    normalize_event_cause,
+)
+
 
 RANDOM_STATE = 42
 MODEL_DIR = Path(__file__).with_name("models")
-NULL_SENTINELS = {"", "null", "none", "nan", "nat", "n/a", "na"}
 
 CATEGORICAL_FEATURES = [
+    "event_type",
+    "event_category",
     "event_cause",
     "corridor",
     "zone",
     "police_station",
+    "priority",
     "veh_type",
 ]
 TIME_FEATURES = ["hour_of_day", "day_of_week"]
@@ -52,16 +61,19 @@ HOUR_BUCKET_SIZE = 3
 EVENT_QUERY = """
 SELECT
     id,
+    event_type,
     event_cause,
     corridor,
     zone,
     police_station,
+    priority,
     veh_type,
     start_datetime,
     requires_road_closure,
     duration_minutes
 FROM events
 """
+MAX_TRAINING_DURATION_MINUTES = int(os.environ.get("MAX_TRAINING_DURATION_MINUTES", str(24 * 60)))
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,21 +115,6 @@ def database_url() -> str:
     return value
 
 
-def normalize_category(value: Any) -> str:
-    if value is None:
-        return "UNKNOWN"
-    try:
-        if pd.isna(value):
-            return "UNKNOWN"
-    except (TypeError, ValueError):
-        pass
-
-    normalized = str(value).strip()
-    if normalized.lower() in NULL_SENTINELS:
-        return "UNKNOWN"
-    return normalized
-
-
 def bool_to_float(value: Any) -> float:
     if value is None:
         return np.nan
@@ -138,6 +135,17 @@ def bool_to_float(value: Any) -> float:
     return np.nan
 
 
+def clean_duration_minutes(row: pd.Series) -> float:
+    raw_duration = row.get("raw_duration_minutes")
+    if pd.isna(raw_duration) or raw_duration < 0:
+        return np.nan
+
+    cap_minutes = duration_cap_for_event(row.to_dict(), MAX_TRAINING_DURATION_MINUTES)
+    if raw_duration > cap_minutes:
+        return np.nan
+    return float(raw_duration)
+
+
 def load_events_from_db() -> pd.DataFrame:
     engine = create_engine(database_url(), future=True)
     return pd.read_sql_query(text(EVENT_QUERY), engine)
@@ -156,10 +164,12 @@ def load_events_from_csv(csv_path: Path) -> pd.DataFrame:
     return data[
         [
             "id",
+            "event_type",
             "event_cause",
             "corridor",
             "zone",
             "police_station",
+            "priority",
             "veh_type",
             "start_datetime",
             "requires_road_closure",
@@ -177,15 +187,28 @@ def add_derived_features(data: pd.DataFrame) -> pd.DataFrame:
     for column in CATEGORICAL_FEATURES:
         if column not in frame:
             frame[column] = "UNKNOWN"
-        frame[column] = frame[column].map(normalize_category)
+        if column == "event_cause":
+            frame[column] = frame[column].map(normalize_event_cause)
+        elif column == "event_category":
+            frame[column] = frame.get("event_cause", "UNKNOWN").map(event_category_for_cause)
+        else:
+            frame[column] = frame[column].map(normalize_category)
+
+    frame["event_category"] = frame["event_cause"].map(event_category_for_cause)
 
     if "requires_road_closure" in frame:
         frame["requires_road_closure"] = frame["requires_road_closure"].map(bool_to_float)
     else:
         frame["requires_road_closure"] = np.nan
 
-    frame["duration_minutes"] = pd.to_numeric(
+    frame["raw_duration_minutes"] = pd.to_numeric(
         frame.get("duration_minutes"), errors="coerce"
+    )
+    frame["duration_minutes"] = frame.apply(clean_duration_minutes, axis=1)
+    frame["duration_was_outlier"] = (
+        frame["raw_duration_minutes"].notna()
+        & frame["duration_minutes"].isna()
+        & (frame["raw_duration_minutes"] >= 0)
     )
     return frame
 
@@ -280,6 +303,14 @@ def train_duration(data: pd.DataFrame, model_dir: Path) -> float:
     trainable = data.loc[
         data["duration_minutes"].notna() & (data["duration_minutes"] >= 0)
     ].copy()
+    outlier_count = int((trainable["duration_minutes"] > MAX_TRAINING_DURATION_MINUTES).sum())
+    if outlier_count:
+        trainable = trainable.loc[trainable["duration_minutes"] <= MAX_TRAINING_DURATION_MINUTES].copy()
+        print(
+            "Duration outlier filter: "
+            f"excluded {outlier_count} rows above {MAX_TRAINING_DURATION_MINUTES} minutes",
+            flush=True,
+        )
     if len(trainable) < 50:
         raise SystemExit(
             f"Duration model needs at least 50 valid duration rows; found {len(trainable)}."
@@ -324,6 +355,8 @@ def train_duration(data: pd.DataFrame, model_dir: Path) -> float:
             "pipeline": pipeline,
             "features": DURATION_FEATURES,
             "quantile": quantile,
+            "max_training_duration_minutes": MAX_TRAINING_DURATION_MINUTES,
+            "excluded_outlier_count": outlier_count,
         }
         suffix = int(quantile * 100)
         joblib.dump(artifact, model_dir / f"duration_q{suffix}_model.pkl")
@@ -432,7 +465,9 @@ def print_data_summary(data: pd.DataFrame) -> None:
     print(
         "Training data: "
         f"events={len(data)}, closure_targets={closure_valid}, "
-        f"valid_durations={duration_valid}, corridors={data['corridor'].nunique()}"
+        f"valid_durations={duration_valid}, "
+        f"duration_outliers_cleaned={int(data.get('duration_was_outlier', pd.Series(dtype=bool)).sum())}, "
+        f"corridors={data['corridor'].nunique()}"
     )
 
 

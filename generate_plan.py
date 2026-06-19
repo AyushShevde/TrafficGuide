@@ -5,12 +5,12 @@ import json
 import time
 from typing import Any
 
-from allocation import allocate_personnel, load_police_stations
+from allocation import allocate_barricades, allocate_personnel, load_police_stations
 from control_points import find_control_points
 from diversion import compute_diversions
 from geo_utils import haversine_meters, nearest_node_by_haversine, node_lat_lon
-from resource_sizing import size_event_resources
-from road_graph import cache_demo_graph, get_graph
+from resource_sizing import control_point_limit_for_event, size_event_resources
+from road_graph import cache_demo_graph, get_graph, get_graph_for_point
 
 
 def event_lat_lon(event_features: dict[str, Any]) -> tuple[float, float]:
@@ -50,7 +50,7 @@ def generate_deployment_plan(
     event_lat, event_lon = event_lat_lon(event_features)
     context = prediction_context(event_features)
 
-    road_graph = graph or get_graph()
+    road_graph = graph or get_graph_for_point(event_lat, event_lon)
     warnings: list[str] = []
     if road_graph.graph.get("cache_status") == "stale_fallback":
         warnings.append(str(road_graph.graph.get("cache_warning") or "Using stale road graph cache."))
@@ -76,6 +76,7 @@ def generate_deployment_plan(
         event_lon,
         search_radius_m=search_radius,
         graph=road_graph,
+        limit=control_point_limit_for_event(context),
     )
     if not control_points:
         warnings.append("No usable control points were found near this event.")
@@ -89,6 +90,11 @@ def generate_deployment_plan(
         stations=stations,
         max_radius_m=allocation_radius_m,
     )
+    barricade_allocation = allocate_barricades(
+        resources["control_points"],
+        stations=stations,
+        max_radius_m=allocation_radius_m,
+    )
     diversions = compute_diversions(
         event_lat,
         event_lon,
@@ -97,6 +103,10 @@ def generate_deployment_plan(
     )
     if not diversions:
         warnings.append("No diversion route could be computed for the selected graph segment.")
+    if barricade_allocation["shortfall"] > 0:
+        warnings.append(
+            f"Barricade shortfall: {barricade_allocation['shortfall']} units unavailable within allocation radius."
+        )
 
     return {
         "event": {
@@ -113,11 +123,17 @@ def generate_deployment_plan(
         "total_personnel": resources["total_personnel"],
         "total_barricades": resources["total_barricades"],
         "allocations": allocation["allocations"],
+        "barricade_allocations": barricade_allocation["allocations"],
+        "personnel_shortfall": allocation["shortfall"],
+        "barricade_shortfall": barricade_allocation["shortfall"],
         "shortfall": allocation["shortfall"],
         "allocation_solver": allocation["solver"],
+        "barricade_allocation_solver": barricade_allocation["solver"],
         "diversions": diversions,
         "nearest_graph_node": int(nearest_graph_node) if nearest_graph_node is not None else None,
         "nearest_graph_distance_m": nearest_graph_distance_m,
+        "graph_scope": road_graph.graph.get("route_graph_scope") or "city",
+        "graph_cache_status": road_graph.graph.get("cache_status") or "unknown",
         "plan_warnings": warnings,
         "runtime_seconds": time.perf_counter() - start,
     }

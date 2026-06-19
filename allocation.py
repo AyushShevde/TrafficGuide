@@ -15,6 +15,7 @@ load_project_env()
 
 DEFAULT_MAX_RADIUS_M = 6_000.0
 NEAREST_STATIONS_PER_POINT = 5
+DEFAULT_SHIFT_AVAILABILITY_FACTOR = 0.82
 
 FALLBACK_STATIONS = [
     {"id": 1, "name": "Yelahanka", "zone": "North Zone 2", "latitude": 13.101419, "longitude": 77.596026, "available_personnel": 31, "available_barricades": 48},
@@ -64,6 +65,16 @@ def load_police_stations() -> list[dict[str, Any]]:
     return frame.to_dict(orient="records")
 
 
+def effective_personnel(station: dict[str, Any]) -> int:
+    if station.get("shift_available_personnel") is not None:
+        return max(0, int(station.get("shift_available_personnel") or 0))
+    return max(0, int(int(station.get("available_personnel") or 0) * DEFAULT_SHIFT_AVAILABILITY_FACTOR))
+
+
+def effective_barricades(station: dict[str, Any]) -> int:
+    return max(0, int(station.get("available_barricades") or 0))
+
+
 def candidate_station_pairs(
     control_points: list[dict[str, Any]],
     stations: list[dict[str, Any]],
@@ -94,7 +105,7 @@ def _greedy_allocate(
     distances: dict[tuple[int, int], float],
 ) -> dict[str, Any]:
     remaining = {
-        station_index: int(station["available_personnel"])
+        station_index: effective_personnel(station)
         for station_index, station in enumerate(stations)
     }
     allocations: list[dict[str, Any]] = []
@@ -227,7 +238,7 @@ def allocate_personnel(
                 for point_index in range(len(control_points))
                 if (station_index, point_index) in assignment_vars
             )
-            <= int(station["available_personnel"])
+            <= effective_personnel(station)
         )
 
     objective = solver.Objective()
@@ -263,6 +274,58 @@ def allocate_personnel(
         "allocations": allocations,
         "shortfall": shortfall,
         "solver": "ortools_cbc",
+    }
+
+
+def allocate_barricades(
+    control_points: list[dict[str, Any]],
+    stations: list[dict[str, Any]] | None = None,
+    max_radius_m: float = DEFAULT_MAX_RADIUS_M,
+) -> dict[str, Any]:
+    stations = stations or load_police_stations()
+    total_required = sum(int(point.get("barricades_needed") or 0) for point in control_points)
+    if total_required <= 0:
+        return {"allocations": [], "shortfall": 0, "solver": "none"}
+
+    distances = candidate_station_pairs(control_points, stations, max_radius_m)
+    if not distances:
+        return {"allocations": [], "shortfall": total_required, "solver": "none"}
+
+    remaining = {
+        station_index: effective_barricades(station)
+        for station_index, station in enumerate(stations)
+    }
+    allocations: list[dict[str, Any]] = []
+    shortfall = 0
+
+    for point_index, point in enumerate(control_points):
+        needed = int(point.get("barricades_needed") or 0)
+        for (station_index, candidate_point_index), distance_m in sorted(
+            distances.items(),
+            key=lambda item: item[1],
+        ):
+            if candidate_point_index != point_index or needed <= 0:
+                continue
+            assigned = min(needed, remaining[station_index])
+            if assigned <= 0:
+                continue
+            remaining[station_index] -= assigned
+            needed -= assigned
+            allocations.append(
+                {
+                    "control_point_node_id": point["node_id"],
+                    "station_id": stations[station_index]["id"],
+                    "station_name": stations[station_index]["name"],
+                    "barricades_assigned": assigned,
+                    "distance_m": distance_m,
+                }
+            )
+        shortfall += needed
+
+    return {
+        "allocations": allocations,
+        "shortfall": shortfall,
+        "solver": "greedy_inventory",
     }
 
 

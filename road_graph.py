@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import os
 import pickle
+import time
+import math
 from pathlib import Path
 from typing import Any
 
 import networkx as nx
 
 from env_loader import load_project_env
+from geo_utils import haversine_meters, nearest_node_by_haversine, node_lat_lon
 
 
 load_project_env()
@@ -21,7 +24,18 @@ DEFAULT_BBOX = {
 }
 DEFAULT_CACHE_PATH = Path(__file__).with_name("graph_cache") / "bengaluru_drive_graph.pkl"
 DEMO_CACHE_PATH = Path(__file__).with_name("graph_cache") / "bengaluru_demo_graph.pkl"
+LOCAL_CACHE_DIR = Path(__file__).with_name("graph_cache") / "local"
 BBOX_TOLERANCE_DEGREES = 0.002
+_GRAPH_MEMORY_CACHE: dict[Path, tuple[float, nx.MultiDiGraph]] = {}
+_GRAPH_CACHE_METRICS = {
+    "requests": 0,
+    "memory_hits": 0,
+    "disk_hits": 0,
+    "downloads": 0,
+    "stale_fallbacks": 0,
+    "misses": 0,
+    "load_seconds_total": 0.0,
+}
 
 
 def parse_bbox(value: str | None = None) -> dict[str, float]:
@@ -66,6 +80,57 @@ def graph_cache_path(cache_path: str | Path | None = None) -> Path:
     return path / DEFAULT_CACHE_PATH.name
 
 
+def bbox_around_point(lat: float, lon: float, radius_m: float) -> dict[str, float]:
+    lat_delta = radius_m / 111_320.0
+    lon_delta = radius_m / max(111_320.0 * math.cos(math.radians(lat)), 1.0)
+    return {
+        "north": lat + lat_delta,
+        "south": lat - lat_delta,
+        "east": lon + lon_delta,
+        "west": lon - lon_delta,
+    }
+
+
+def local_graph_cache_path(lat: float, lon: float, radius_m: float) -> Path:
+    tile_lat = round(lat, 2)
+    tile_lon = round(lon, 2)
+    radius_key = int(round(radius_m / 500.0) * 500)
+    return LOCAL_CACHE_DIR / f"drive_{tile_lat:.2f}_{tile_lon:.2f}_{radius_key}m.pkl"
+
+
+def normalized_cache_path(path: Path) -> Path:
+    return path.expanduser().resolve(strict=False)
+
+
+def record_cache_metric(name: str, amount: float = 1.0) -> None:
+    _GRAPH_CACHE_METRICS[name] = _GRAPH_CACHE_METRICS.get(name, 0) + amount
+
+
+def reset_graph_cache_metrics() -> None:
+    for key in list(_GRAPH_CACHE_METRICS):
+        _GRAPH_CACHE_METRICS[key] = 0.0 if key == "load_seconds_total" else 0
+
+
+def graph_cache_metrics() -> dict[str, Any]:
+    requests = int(_GRAPH_CACHE_METRICS.get("requests", 0))
+    memory_hits = int(_GRAPH_CACHE_METRICS.get("memory_hits", 0))
+    disk_hits = int(_GRAPH_CACHE_METRICS.get("disk_hits", 0))
+    downloads = int(_GRAPH_CACHE_METRICS.get("downloads", 0))
+    stale_fallbacks = int(_GRAPH_CACHE_METRICS.get("stale_fallbacks", 0))
+    served_from_cache = max(0, requests - downloads)
+    return {
+        "requests": requests,
+        "memory_hits": memory_hits,
+        "disk_hits": disk_hits,
+        "downloads": downloads,
+        "stale_fallbacks": stale_fallbacks,
+        "misses": int(_GRAPH_CACHE_METRICS.get("misses", 0)),
+        "cache_hit_rate": round(served_from_cache / max(requests, 1), 3),
+        "memory_hit_rate": round(memory_hits / max(requests, 1), 3),
+        "load_seconds_total": round(float(_GRAPH_CACHE_METRICS.get("load_seconds_total", 0.0)), 4),
+    }
+
+
 def bbox_covers(
     cached_bbox: dict[str, float] | None,
     requested_bbox: dict[str, float],
@@ -98,6 +163,7 @@ def mark_stale_graph(
     requested_bbox: dict[str, float],
     message: str,
 ) -> nx.MultiDiGraph:
+    record_cache_metric("stale_fallbacks")
     graph.graph["cache_status"] = "stale_fallback"
     graph.graph["requested_bbox"] = requested_bbox
     graph.graph["cache_warning"] = message
@@ -149,11 +215,26 @@ def _save_graph(graph: nx.MultiDiGraph, cache_path: Path) -> None:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     with cache_path.open("wb") as handle:
         pickle.dump(graph, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    resolved = normalized_cache_path(cache_path)
+    _GRAPH_MEMORY_CACHE[resolved] = (cache_path.stat().st_mtime, graph)
 
 
 def _load_graph(cache_path: Path) -> nx.MultiDiGraph:
+    started = time.perf_counter()
+    resolved = normalized_cache_path(cache_path)
+    mtime = cache_path.stat().st_mtime
+    cached = _GRAPH_MEMORY_CACHE.get(resolved)
+    if cached and cached[0] == mtime:
+        record_cache_metric("memory_hits")
+        record_cache_metric("load_seconds_total", time.perf_counter() - started)
+        return cached[1]
+
     with cache_path.open("rb") as handle:
-        return pickle.load(handle)
+        graph = pickle.load(handle)
+    _GRAPH_MEMORY_CACHE[resolved] = (mtime, graph)
+    record_cache_metric("disk_hits")
+    record_cache_metric("load_seconds_total", time.perf_counter() - started)
+    return graph
 
 
 def get_graph(
@@ -163,6 +244,7 @@ def get_graph(
 ) -> nx.MultiDiGraph:
     """Return a cached drivable Bengaluru OSM graph, downloading only on cache miss."""
 
+    record_cache_metric("requests")
     path = graph_cache_path(cache_path)
     requested_bbox = bbox or parse_bbox()
     stale_graph: nx.MultiDiGraph | None = None
@@ -186,6 +268,7 @@ def get_graph(
                 ),
             )
 
+    record_cache_metric("misses")
     try:
         graph = _download_osm_graph(requested_bbox)
     except Exception as exc:
@@ -201,6 +284,77 @@ def get_graph(
         )
 
     graph.graph["cache_status"] = "fresh"
+    record_cache_metric("downloads")
+    _save_graph(graph, path)
+    return graph
+
+
+def graph_nearest_distance_m(graph: nx.MultiDiGraph, lat: float, lon: float) -> float:
+    if not graph.nodes:
+        return float("inf")
+    nearest = nearest_node_by_haversine(graph, lat, lon)
+    return haversine_meters(lat, lon, *node_lat_lon(graph, nearest))
+
+
+def get_graph_for_point(
+    lat: float,
+    lon: float,
+    radius_m: float = 3_000.0,
+    max_nearest_distance_m: float = 900.0,
+) -> nx.MultiDiGraph:
+    """Return the best cached road graph for a specific event location.
+
+    The city-wide cache is preferred when it actually covers the event. If the
+    nearest graph node is too far away, a small event-local OSM graph is cached
+    by location tile so future forecasts do not re-download it.
+    """
+
+    city_graph = get_graph()
+    if graph_nearest_distance_m(city_graph, lat, lon) <= max_nearest_distance_m:
+        if city_graph.graph.get("cache_status") == "stale_fallback":
+            city_graph.graph["cache_status"] = "fresh_for_event"
+            city_graph.graph.pop("cache_warning", None)
+        city_graph.graph["route_graph_scope"] = "city"
+        return city_graph
+
+    local_bbox = bbox_around_point(lat, lon, radius_m)
+    path = local_graph_cache_path(lat, lon, radius_m)
+    record_cache_metric("requests")
+    stale_graph: nx.MultiDiGraph | None = None
+
+    if path.exists():
+        graph = _load_graph(path)
+        cached_bbox = graph.graph.get("bbox")
+        if bbox_covers(cached_bbox, local_bbox):
+            graph.graph["cache_status"] = "fresh"
+            graph.graph["route_graph_scope"] = "event_local"
+            return graph
+        stale_graph = graph
+
+    record_cache_metric("misses")
+    try:
+        graph = _download_osm_graph(local_bbox)
+    except Exception as exc:
+        if stale_graph is not None:
+            stale_graph.graph["route_graph_scope"] = "event_local_stale"
+            return mark_stale_graph(
+                stale_graph,
+                local_bbox,
+                f"Event-local road graph refresh failed: {exc}",
+            )
+        city_graph.graph["route_graph_scope"] = "city_stale_for_event"
+        return mark_stale_graph(
+            city_graph,
+            local_bbox,
+            (
+                "No event-local road graph was available, and refresh failed: "
+                f"{exc}"
+            ),
+        )
+
+    graph.graph["cache_status"] = "fresh"
+    graph.graph["route_graph_scope"] = "event_local"
+    record_cache_metric("downloads")
     _save_graph(graph, path)
     return graph
 

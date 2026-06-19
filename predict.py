@@ -23,36 +23,30 @@ warnings.filterwarnings(
 import joblib
 import pandas as pd
 
+from feature_cleaning import (
+    duration_cap_for_event,
+    event_category_for_cause,
+    is_minor_road_defect_context,
+    normalize_category,
+    normalize_event_cause,
+)
 from integrations import operational_context_for_event
 
 
 MODEL_DIR = Path(os.environ.get("MODEL_DIR", Path(__file__).with_name("models")))
-NULL_SENTINELS = {"", "null", "none", "nan", "nat", "n/a", "na"}
 CATEGORICAL_FEATURES = [
+    "event_type",
+    "event_category",
     "event_cause",
     "corridor",
     "zone",
     "police_station",
+    "priority",
     "veh_type",
 ]
 SEVERITY_FEATURES = CATEGORICAL_FEATURES + ["hour_of_day", "day_of_week"]
 DURATION_FEATURES = SEVERITY_FEATURES + ["requires_road_closure"]
 HOUR_BUCKET_SIZE = 3
-
-
-def normalize_category(value: Any) -> str:
-    if value is None:
-        return "UNKNOWN"
-    try:
-        if pd.isna(value):
-            return "UNKNOWN"
-    except (TypeError, ValueError):
-        pass
-
-    normalized = str(value).strip()
-    if normalized.lower() in NULL_SENTINELS:
-        return "UNKNOWN"
-    return normalized
 
 
 def bool_to_float(value: Any) -> float | None:
@@ -98,8 +92,14 @@ def build_feature_frame(
         "day_of_week": day_of_week,
     }
 
+    cleaned_cause = normalize_event_cause(event_features.get("event_cause"))
     for column in CATEGORICAL_FEATURES:
-        row[column] = normalize_category(event_features.get(column))
+        if column == "event_cause":
+            row[column] = cleaned_cause
+        elif column == "event_category":
+            row[column] = event_category_for_cause(cleaned_cause)
+        else:
+            row[column] = normalize_category(event_features.get(column))
 
     if requires_road_closure is not None:
         row["requires_road_closure"] = requires_road_closure
@@ -183,7 +183,7 @@ def survival_context_for_event(
             "adjustment_factor": 1.0,
         }
 
-    event_cause = normalize_category(event_features.get("event_cause"))
+    event_cause = normalize_event_cause(event_features.get("event_cause"))
     corridor = normalize_category(event_features.get("corridor"))
     hour_of_day, day_of_week = time_parts(event_features.get("start_datetime"))
     bucket = hour_bucket(hour_of_day)
@@ -245,6 +245,10 @@ def operational_metrics(
     affected_road_segments = max(1, round(1 + risk_score * 4 + (1 if severity_label == "HIGH" else 0)))
     clearance_time_minutes = duration_median * closure_factor + expected_delay_minutes * 0.2
     personnel_demand = max(4, round(4 + severity_probability * 8 + risk_score * 6))
+    if is_minor_road_defect_context(event_features):
+        personnel_demand = min(personnel_demand, 8)
+    elif event_category_for_cause(event_features.get("event_cause")) in {"crash", "breakdown", "congestion"}:
+        personnel_demand = min(personnel_demand, 12)
 
     explanation = [
         f"severity_probability={severity_probability:.2f} from event/corridor/station/time features",
@@ -278,12 +282,7 @@ def operational_metrics(
 
 
 def duration_cap_minutes(event_features: dict[str, Any]) -> float:
-    cause = normalize_category(event_features.get("event_cause")).lower()
-    if "construction" in cause:
-        return 24 * 60.0
-    if "public_event" in cause or "procession" in cause or "protest" in cause:
-        return 12 * 60.0
-    return 8 * 60.0
+    return float(duration_cap_for_event(event_features, 8 * 60))
 
 
 def predict_impact(event_features: dict[str, Any]) -> dict[str, Any]:

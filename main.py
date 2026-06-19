@@ -31,6 +31,7 @@ from integrations import (
 )
 from model_monitoring import drift_summary, forecast_backtest_summary, retrain_plan
 from multi_incident import build_multi_incident_plan
+from operational_monitoring import operational_metrics_snapshot
 from platform_ops import (
     platform_health,
     retention_dry_run,
@@ -148,6 +149,18 @@ REQUEST_STATS = {
     "errors_total": 0,
     "latency_ms_total": 0.0,
 }
+FORECAST_CACHE_TTL_SECONDS = int(os.environ.get("FORECAST_CACHE_TTL_SECONDS", "300"))
+PLAN_CACHE_TTL_SECONDS = int(os.environ.get("PLAN_CACHE_TTL_SECONDS", "600"))
+ACTIVE_EVENT_LOOKBACK_DAYS_RAW = os.environ.get("ACTIVE_EVENT_LOOKBACK_DAYS")
+ACTIVE_EVENT_LOOKBACK_DAYS = int(ACTIVE_EVENT_LOOKBACK_DAYS_RAW) if ACTIVE_EVENT_LOOKBACK_DAYS_RAW else None
+ACTIVE_EVENT_LIMIT = int(os.environ.get("ACTIVE_EVENT_LIMIT", "1000"))
+ACTIVE_EVENT_INCLUDE_DEMO_FEEDS = os.environ.get("ACTIVE_EVENT_INCLUDE_DEMO_FEEDS", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+_FORECAST_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_PLAN_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 class RequestContext(BaseModel):
@@ -304,13 +317,49 @@ def get_event_or_404(event_id: str) -> dict[str, Any]:
     return event
 
 
+def event_cache_signature(event_id: str, event: dict[str, Any]) -> str:
+    signature_fields = [
+        event_id,
+        event.get("status"),
+        event.get("event_cause"),
+        event.get("priority"),
+        event.get("corridor"),
+        event.get("zone"),
+        event.get("police_station"),
+        event.get("start_datetime") or event.get("scheduled_start"),
+        event.get("requires_road_closure"),
+        event.get("latitude"),
+        event.get("longitude"),
+    ]
+    return "|".join(str(jsonable(value)) for value in signature_fields)
+
+
+def cached_value(cache: dict[str, tuple[float, dict[str, Any]]], key: str, ttl_seconds: int) -> dict[str, Any] | None:
+    cached = cache.get(key)
+    if not cached:
+        return None
+    cached_at, value = cached
+    if time.monotonic() - cached_at > ttl_seconds:
+        cache.pop(key, None)
+        return None
+    return dict(value)
+
+
+def remember_value(cache: dict[str, tuple[float, dict[str, Any]]], key: str, value: dict[str, Any]) -> dict[str, Any]:
+    cache[key] = (time.monotonic(), dict(value))
+    return value
+
+
 def active_events() -> list[dict[str, Any]]:
     engine = get_engine()
     if engine is None:
         return jsonable(live_incidents())
+    cutoff = datetime.now(UTC) - timedelta(days=ACTIVE_EVENT_LOOKBACK_DAYS) if ACTIVE_EVENT_LOOKBACK_DAYS else None
+    date_filter = "AND start_datetime >= :cutoff" if cutoff else ""
     query = text(
-        """
+        f"""
         SELECT
+            'events_database' AS source,
             id,
             latitude,
             longitude,
@@ -323,12 +372,22 @@ def active_events() -> list[dict[str, Any]]:
             status
         FROM events
         WHERE status = 'active'
+            AND latitude IS NOT NULL
+            AND longitude IS NOT NULL
+            {date_filter}
         ORDER BY start_datetime DESC NULLS LAST
+        LIMIT :limit
         """
     )
+    params = {"limit": ACTIVE_EVENT_LIMIT}
+    if cutoff:
+        params["cutoff"] = cutoff
     with engine.connect() as connection:
-        rows = connection.execute(query).mappings().all()
+        rows = connection.execute(query, params).mappings().all()
     db_events = [jsonable(dict(row)) for row in rows]
+    if not ACTIVE_EVENT_INCLUDE_DEMO_FEEDS:
+        return db_events
+
     seen_ids = {str(event.get("id")) for event in db_events}
     feed_events = [
         jsonable(event)
@@ -422,13 +481,43 @@ def similar_events(event_features: dict[str, Any], limit: int = 5) -> list[dict[
 
 def forecast_event(event_id: str) -> dict[str, Any]:
     event = get_event_or_404(event_id)
+    cache_key = event_cache_signature(event_id, event)
+    cached = cached_value(_FORECAST_CACHE, cache_key, FORECAST_CACHE_TTL_SECONDS)
+    if cached is not None:
+        cached["cache_status"] = "hit"
+        return cached
+
     forecast = predict_impact(event)
-    return {
+    payload = {
         "event_id": event_id,
         **jsonable(forecast),
         "operational_context": jsonable(operational_context_for_event(event)),
         "similar_events": similar_events(event, limit=5),
+        "cache_status": "miss",
     }
+    return remember_value(_FORECAST_CACHE, cache_key, payload)
+
+
+def plan_event(event_id: str) -> dict[str, Any]:
+    event = get_event_or_404(event_id)
+    cache_key = event_cache_signature(event_id, event)
+    cached = cached_value(_PLAN_CACHE, cache_key, PLAN_CACHE_TTL_SECONDS)
+    if cached is not None:
+        cached["plan_cache_status"] = "hit"
+        return cached
+
+    forecast_payload = forecast_event(event_id)
+    forecast = {
+        key: value
+        for key, value in forecast_payload.items()
+        if key not in {"event_id", "similar_events", "operational_context", "cache_status"}
+    }
+    merged = dict(event)
+    merged.update(forecast)
+    plan = jsonable(generate_deployment_plan(merged))
+    plan["plan_cache_status"] = "miss"
+    plan["forecast_cache_status"] = forecast_payload.get("cache_status")
+    return remember_value(_PLAN_CACHE, cache_key, plan)
 
 
 def ensure_feedback_schema(engine: Engine) -> None:
@@ -476,6 +565,82 @@ def plan_for_feedback(
     return int(plan.get("total_personnel") or 0)
 
 
+def ensure_event_row_for_feedback(connection, event_id: str, event: dict[str, Any]) -> None:
+    exists = connection.execute(
+        text("SELECT 1 FROM events WHERE id = :event_id"),
+        {"event_id": event_id},
+    ).first()
+    if exists:
+        return
+
+    start_datetime = parse_datetime(
+        event.get("start_datetime")
+        or event.get("scheduled_start")
+        or event.get("scheduled_start_time")
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO events (
+                id,
+                event_type,
+                latitude,
+                longitude,
+                address,
+                event_cause,
+                requires_road_closure,
+                start_datetime,
+                status,
+                description,
+                veh_type,
+                corridor,
+                priority,
+                police_station,
+                zone,
+                junction
+            )
+            VALUES (
+                :id,
+                :event_type,
+                :latitude,
+                :longitude,
+                :address,
+                :event_cause,
+                :requires_road_closure,
+                :start_datetime,
+                :status,
+                :description,
+                :veh_type,
+                :corridor,
+                :priority,
+                :police_station,
+                :zone,
+                :junction
+            )
+            ON CONFLICT (id) DO NOTHING
+            """
+        ),
+        {
+            "id": event_id,
+            "event_type": event.get("event_type") or "planned",
+            "latitude": event.get("latitude"),
+            "longitude": event.get("longitude"),
+            "address": event.get("address") or event.get("name"),
+            "event_cause": event.get("event_cause"),
+            "requires_road_closure": event.get("requires_road_closure"),
+            "start_datetime": start_datetime,
+            "status": event.get("status") or "planned",
+            "description": event.get("description") or event.get("name"),
+            "veh_type": event.get("veh_type"),
+            "corridor": event.get("corridor"),
+            "priority": event.get("priority"),
+            "police_station": event.get("police_station"),
+            "zone": event.get("zone"),
+            "junction": event.get("junction"),
+        },
+    )
+
+
 def write_feedback(event_id: str, payload: FeedbackRequest) -> dict[str, Any]:
     event = get_event_or_404(event_id)
     forecast = predict_impact(event)
@@ -492,6 +657,7 @@ def write_feedback(event_id: str, payload: FeedbackRequest) -> dict[str, Any]:
     if engine is not None:
         ensure_feedback_schema(engine)
         with engine.begin() as connection:
+            ensure_event_row_for_feedback(connection, event_id, event)
             connection.execute(
                 text(
                     """
@@ -602,21 +768,36 @@ def feedback_accuracy_from_rows(rows: list[dict[str, Any]]) -> float | None:
 
 def db_metrics_summary(engine: Engine) -> dict[str, Any]:
     ensure_feedback_schema(engine)
+    active_ids = {str(event.get("id")) for event in active_events()}
+    cutoff = datetime.now(UTC) - timedelta(days=ACTIVE_EVENT_LOOKBACK_DAYS) if ACTIVE_EVENT_LOOKBACK_DAYS else None
+    date_filter = "AND start_datetime >= :cutoff" if cutoff else ""
+    count_params = {"cutoff": cutoff} if cutoff else {}
     with engine.connect() as connection:
         active_count = connection.execute(
-            text("SELECT COUNT(*) FROM events WHERE status = 'active'")
+            text(
+                f"""
+                SELECT COUNT(*)
+                FROM events
+                WHERE status = 'active'
+                    AND latitude IS NOT NULL
+                    AND longitude IS NOT NULL
+                    {date_filter}
+                """
+            ),
+            count_params,
         ).scalar_one()
-        personnel = connection.execute(
+        personnel_rows = connection.execute(
             text(
                 """
-                SELECT COALESCE(SUM(COALESCE(f.adjusted_personnel, f.plan_total_personnel, 0)), 0)
-                FROM feedback AS f
-                JOIN events AS e ON e.id = f.event_id
-                WHERE f.plan_accepted IS TRUE
-                    AND e.status = 'active'
+                SELECT
+                    event_id,
+                    adjusted_personnel,
+                    plan_total_personnel
+                FROM feedback
+                WHERE plan_accepted IS TRUE
                 """
             )
-        ).scalar_one()
+        ).mappings().all()
         feedback_rows = connection.execute(
             text(
                 """
@@ -630,8 +811,16 @@ def db_metrics_summary(engine: Engine) -> dict[str, Any]:
             )
         ).mappings().all()
 
+    personnel = sum(
+        int(row.get("adjusted_personnel") or row.get("plan_total_personnel") or 0)
+        for row in personnel_rows
+        if str(row.get("event_id")) in active_ids
+    )
+    active_total = int(active_count)
+    if ACTIVE_EVENT_INCLUDE_DEMO_FEEDS:
+        active_total += len(live_incidents())
     return {
-        "active_incident_count": int(active_count) + len(live_incidents()),
+        "active_incident_count": active_total,
         "planned_events_today": planned_events_today(),
         "total_personnel_deployed": int(personnel or 0),
         "forecast_accuracy_30d": feedback_accuracy_from_rows(
@@ -763,6 +952,36 @@ def field_assignments(station_name: str = "Cubbon Park") -> dict[str, Any]:
     return station_assignments_from_feedback_rows(rows, station_name)
 
 
+def feedback_rows_for_roi() -> list[dict[str, Any]] | None:
+    engine = get_engine()
+    if engine is None:
+        return None
+    ensure_feedback_schema(engine)
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT
+                    event_id,
+                    predicted_severity,
+                    predicted_duration_minutes,
+                    actual_duration_minutes,
+                    officer_rating,
+                    plan_accepted,
+                    adjusted_personnel,
+                    plan_total_personnel,
+                    plan_json,
+                    event_name,
+                    created_at
+                FROM feedback
+                WHERE created_at >= NOW() - INTERVAL '30 days'
+                ORDER BY created_at DESC
+                """
+            )
+        ).mappings().all()
+    return [jsonable(dict(row)) for row in rows]
+
+
 @app.get("/")
 def get_api_root() -> dict[str, Any]:
     return {
@@ -884,11 +1103,7 @@ def post_forecast(event_id: str) -> dict[str, Any]:
 
 @app.post("/events/{event_id}/plan")
 def post_plan(event_id: str) -> dict[str, Any]:
-    event = get_event_or_404(event_id)
-    forecast = predict_impact(event)
-    merged = dict(event)
-    merged.update(forecast)
-    return jsonable(generate_deployment_plan(merged))
+    return plan_event(event_id)
 
 
 @app.post("/plans/multi-incident")
@@ -970,7 +1185,19 @@ def get_metrics_summary() -> dict[str, Any]:
 @app.get("/metrics/roi")
 def get_metrics_roi() -> dict[str, Any]:
     planned = [planned_event_response(event) for event in [*load_planned_events(), *planned_permits()]]
-    return jsonable(executive_roi_summary(active_events(), planned))
+    return jsonable(executive_roi_summary(active_events(), planned, feedback_rows_for_roi()))
+
+
+@app.get("/metrics/operational")
+def get_metrics_operational(event_id: str | None = None) -> dict[str, Any]:
+    plan = None
+    if event_id:
+        event = get_event_or_404(event_id)
+        forecast = predict_impact(event)
+        merged = dict(event)
+        merged.update(forecast)
+        plan = generate_deployment_plan(merged)
+    return jsonable(operational_metrics_snapshot(plan))
 
 
 @app.get("/field/assignments")
