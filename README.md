@@ -2506,5 +2506,3 @@ test: add allocation solver tests
 ---
 
 **Last Updated**: June 20, 2026
-**Maintained By**: Traffic Forecasting Team
-**Status**: Production-Ready MVP
