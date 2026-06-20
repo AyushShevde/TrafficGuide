@@ -164,162 +164,135 @@ graph TB
 
 ### System Overview
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         INCIDENT EVENT                           │
-│                                                                   │
-│  ├─ Live feed (Google Maps, Astram API, CCTV)                   │
-│  ├─ Planned events (permits, VIP movements)                     │
-│  └─ Historical data (CSV load)                                  │
-└────────────────┬────────────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│               FORECASTING LAYER (predict.py)                     │
-│                                                                   │
-│  1. Feature Engineering                                          │
-│     └─ Normalize event cause, corridor, zone, time features     │
-│                                                                   │
-│  2. ML Prediction                                                │
-│     ├─ Severity Classification (XGBoost)                        │
-│     │  └─ P(HIGH severity) from event + contextual features    │
-│     ├─ Duration Quantile Regression (LightGBM)                 │
-│     │  └─ Q25, Q50, Q75 with survival analysis adjustment      │
-│     └─ Risk Scoring (Historical Density Heatmap)               │
-│        └─ Corridor × Hour × Day_of_Week → Risk [0,1]          │
-│                                                                   │
-│  3. Operational Metrics                                         │
-│     ├─ Expected delay minutes                                   │
-│     ├─ Queue length (m)                                         │
-│     ├─ Personnel demand (count)                                 │
-│     └─ Confidence level [0.35-0.92]                             │
-└────────────────┬────────────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│            PLANNING LAYER (generate_plan.py)                     │
-│                                                                   │
-│  1. Geographic Analysis                                         │
-│     ├─ Load OSM road graph (cached)                            │
-│     ├─ Find control points (intersections/segments)            │
-│     └─ Compute diversions (alternative routes)                 │
-│                                                                   │
-│  2. Resource Sizing                                             │
-│     ├─ Personnel per control point (based on severity)         │
-│     ├─ Barricades per control point                            │
-│     └─ Total demand calculation                                │
-│                                                                   │
-│  3. Allocation Optimization (allocation.py)                     │
-│     ├─ Distance matrix (control points ↔ stations)             │
-│     ├─ OR-Tools LP solver (if available)                       │
-│     └─ Greedy fallback (if solver unavailable)                 │
-│                                                                   │
-│  Result: Deployment Plan with allocations + warnings            │
-└────────────────┬────────────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                 WORKFLOW LAYER (workflow.py)                     │
-│                                                                   │
-│  1. Plan Lifecycle                                              │
-│     draft → submitted → approved → activated → closed          │
-│                                                                   │
-│  2. Multi-level Approval                                        │
-│     ├─ Traffic Commander (validates plan)                      │
-│     ├─ Zone Superintendent (authorizes deployment)             │
-│     └─ Audit trail at each step                                │
-│                                                                   │
-│  3. Immutable Audit Log                                         │
-│     └─ Every action logged with actor, timestamp, reason       │
-└────────────────┬────────────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              EXECUTION & FEEDBACK LAYER                          │
-│                                                                   │
-│  1. Field Officer Updates                                       │
-│     ├─ Real-time status (control_points.node_id + status)     │
-│     ├─ Photo/note capture (photo_url, note fields)            │
-│     └─ Location updates (lat, lon from mobile GPS)            │
-│                                                                   │
-│  2. Outcome Recording                                           │
-│     ├─ Actual incident duration                                │
-│     ├─ Personnel adjustments made                              │
-│     ├─ Officer rating (1-5 stars)                             │
-│     └─ Plan acceptance/rejection                               │
-│                                                                   │
-│  3. Loop Closure                                                │
-│     Actual outcomes → Feedback table → Model retraining         │
-│                       (offline, via train_models.py)            │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Sources["📥 INCIDENT EVENT"]
+        LiveFeed["Live Feed<br/>(Google Maps, CCTV)"]
+        PlannedEvents["Planned Events<br/>(Permits, VIP)"]
+        HistData["Historical Data<br/>(CSV Load)"]
+    end
+
+    subgraph Forecast["🤖 FORECASTING LAYER<br/>(predict.py)"]
+        FeatEng["1️⃣ Feature Engineering<br/>━━━━━<br/>Normalize cause<br/>corridor, zone, time"]
+        
+        MLPred["2️⃣ ML Prediction<br/>━━━━━<br/>Severity (XGBoost)<br/>Duration (LightGBM)<br/>Q25, Q50, Q75"]
+        
+        RiskScore["Risk Scoring<br/>━━━━━<br/>Corridor × Hour<br/>× Day_of_Week<br/>→ Risk [0,1]"]
+        
+        OpMetrics["3️⃣ Operational Metrics<br/>━━━━━<br/>Expected delay<br/>Queue length<br/>Personnel demand<br/>Confidence [0.35-0.92]"]
+    end
+
+    subgraph Planning["🗺️ PLANNING LAYER<br/>(generate_plan.py)"]
+        GeoAnal["1️⃣ Geographic Analysis<br/>━━━━━<br/>OSM road graph<br/>Control points<br/>Diversions"]
+        
+        ResSize["2️⃣ Resource Sizing<br/>━━━━━<br/>Personnel/Barricade<br/>per control point<br/>Total demand"]
+        
+        Alloc["3️⃣ Allocation<br/>(allocation.py)<br/>━━━━━<br/>Distance matrix<br/>OR-Tools solver<br/>Greedy fallback"]
+        
+        DeployPlan["Result: Deployment Plan<br/>━━━━━<br/>Allocations + Warnings"]
+    end
+
+    subgraph Workflow["📋 WORKFLOW LAYER<br/>(workflow.py)"]
+        Lifecycle["1️⃣ Plan Lifecycle<br/>━━━━━<br/>draft → submitted<br/>→ approved → activated<br/>→ closed"]
+        
+        Approval["2️⃣ Multi-level Approval<br/>━━━━━<br/>Traffic Commander<br/>Zone Superintendent<br/>Audit trail"]
+        
+        AuditLog["3️⃣ Immutable Audit Log<br/>━━━━━<br/>Every action logged<br/>Actor, timestamp, reason"]
+    end
+
+    subgraph Execution["🚀 EXECUTION & FEEDBACK"]
+        FieldOps["1️⃣ Field Officer Updates<br/>━━━━━<br/>Real-time status<br/>Photo/note capture<br/>GPS location"]
+        
+        Outcome["2️⃣ Outcome Recording<br/>━━━━━<br/>Actual duration<br/>Personnel adjustments<br/>Officer rating (1-5)<br/>Plan acceptance"]
+        
+        Loop["3️⃣ Loop Closure<br/>━━━━━<br/>Outcomes → Feedback<br/>→ Model retraining<br/>(offline)"]
+    end
+
+    Sources --> Forecast
+    Forecast --> Planning
+    Planning --> Workflow
+    Workflow --> Execution
+
+    classDef source fill:#e1f5ff,stroke:#01579b,stroke-width:2px,color:#000
+    classDef forecast fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px,color:#000
+    classDef planning fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
+    classDef workflow fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
+    classDef exec fill:#e0f2f1,stroke:#004d40,stroke-width:2px,color:#000
+
+    class Sources source
+    class Forecast,FeatEng,MLPred,RiskScore,OpMetrics forecast
+    class Planning,GeoAnal,ResSize,Alloc,DeployPlan planning
+    class Workflow,Lifecycle,Approval,AuditLog workflow
+    class Execution,FieldOps,Outcome,Loop exec
 ```
 
 ### Data Architecture
 
-```
-┌──────────────────────────────────┐
-│       PostgreSQL 15 + PostGIS    │
-│                                  │
-│  ├─ tenants (multi-tenancy)     │
-│  ├─ app_users (RBAC)            │
-│  ├─ events (incidents w/ geom)  │
-│  ├─ police_stations (inventory) │
-│  ├─ feedback (outcomes)         │
-│  ├─ plan_workflows (lifecycle)  │
-│  ├─ field_status_updates (live) │
-│  └─ audit_log (compliance)      │
-│                                  │
-└──────────────────────────────────┘
-         ↑          ↓
-    SQLAlchemy
-       ORM
-         ↑          ↓
-    ┌──────────────────────────────────┐
-    │      Python FastAPI Server       │
-    │  :8000 (REST + WebSocket)        │
-    └──────────────────────────────────┘
-         ↑          ↓
-    ┌──────────────────────────────────────────┐
-    │   Clients (Mobile, Web, Command Center)  │
-    └──────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Database["💾 PERSISTENT STORAGE"]
+        DB["PostgreSQL 15 + PostGIS<br/>━━━━━━━━<br/>tenants<br/>app_users<br/>events (w/ geom)<br/>police_stations<br/>feedback<br/>plan_workflows<br/>field_status_updates<br/>audit_log"]
+    end
+
+    subgraph ORM["🔗 ORM LAYER"]
+        SQLAlchemy["SQLAlchemy ORM<br/>━━━━━━━━<br/>Type-safe queries<br/>Connection pooling"]
+    end
+
+    subgraph API["🌐 API SERVER"]
+        FastAPI["FastAPI 0.110+<br/>━━━━━━━━<br/>REST Endpoints<br/>WebSocket<br/>:8000"]
+    end
+
+    subgraph Clients["👥 CLIENTS"]
+        Mobile["📱 Mobile App<br/>(Field Officers)"]
+        Web["🖥️ Web Dashboard<br/>(Command Center)"]
+        External["🔗 External Systems<br/>(Integration APIs)"]
+    end
+
+    Database --> ORM
+    ORM --> API
+    API --> Mobile
+    API --> Web
+    API --> External
+
+    classDef db fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#000
+    classDef orm fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
+    classDef api fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    classDef client fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#000
+
+    class Database,DB db
+    class ORM,SQLAlchemy orm
+    class API,FastAPI api
+    class Clients,Mobile,Web,External client
 ```
 
 ### ML Pipeline Architecture
 
-```
-┌─────────────────────────────────────┐
-│   Model Training (train_models.py)  │
-│   Runs offline on historical data   │
-└────────────┬────────────────────────┘
-             │
-             ▼
-┌─────────────────────────────────────────────────────┐
-│          Trained Artifacts (models/ dir)            │
-│                                                      │
-│  ├─ severity_model.pkl                             │
-│  │  └─ XGBoost classifier pipeline                │
-│  ├─ duration_q25_model.pkl                        │
-│  ├─ duration_q50_model.pkl                        │
-│  └─ duration_q75_model.pkl                        │
-│     └─ LightGBM quantile regressors              │
-│  ├─ risk_density.parquet                         │
-│  │  └─ Corridor × Hour × Day_of_Week heatmap    │
-│  └─ duration_survival_table.parquet              │
-│     └─ Censoring adjustments per corridor        │
-└─────────────────┬───────────────────────────────────┘
-                  │
-                  ▼
-┌──────────────────────────────────────┐
-│   predict.py (predict_impact)        │
-│                                      │
-│  1. Load artifacts (cached, LRU)     │
-│  2. Build feature frame              │
-│  3. Predict severity + duration      │
-│  4. Lookup risk score                │
-│  5. Compute operational metrics      │
-│                                      │
-│  → Deterministic, <2s latency        │
-└──────────────────────────────────────┘
+```mermaid
+graph LR
+    subgraph Training["📊 MODEL TRAINING<br/>(Offline)"]
+        TrainInput["train_models.py<br/>━━━━━<br/>Historical Data<br/>(30-day feedback)"]
+        
+        ArtifactGen["Trained Artifacts<br/>━━━━━<br/>severity_model.pkl<br/>duration_q25.pkl<br/>duration_q50.pkl<br/>duration_q75.pkl<br/>risk_density.parquet<br/>survival_table.parquet"]
+    end
+
+    subgraph Inference["⚡ INFERENCE<br/>(Online)"]
+        InferInput["Event Input<br/>━━━━━<br/>Cause, Corridor<br/>Zone, Station"]
+        
+        Predict["predict.py<br/>━━━━━<br/>Load artifacts<br/>Build features<br/>Predict severity<br/>Predict duration<br/>Risk lookup<br/>Survival adjust"]
+        
+        Output["Forecast Output<br/>━━━━━<br/>severity_label<br/>duration_CI<br/>risk_score<br/>personnel_demand<br/>operational_metrics"]
+    end
+
+    Training --> ArtifactGen
+    ArtifactGen --> Predict
+    InferInput --> Predict
+    Predict --> Output
+
+    classDef training fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#000
+    classDef inference fill:#b3e5fc,stroke:#01579b,stroke-width:2px,color:#000
+
+    class Training,TrainInput,ArtifactGen training
+    class Inference,InferInput,Predict,Output inference
 ```
 
 ---
