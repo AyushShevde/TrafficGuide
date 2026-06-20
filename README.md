@@ -10,7 +10,7 @@
 |---------|---------|------------------|
 | **Nishant Gawande** | Full-Stack Engineer | Database design, data pipeline, schema design, integration layer |
 | **Ayush Shevde** | Data & ML Engineer | ML model development, feature engineering, prediction pipeline, model monitoring |
-| **Yash Sonalekar** | System Design, Documentation, Refactoring, Data Preprocessing, System Diagrams, Research|
+| **Yash Sonalekar** | Research & Documentation |System Design, Documentation, Refactoring, Data Preprocessing, System Diagrams, Research|
 
 
 
