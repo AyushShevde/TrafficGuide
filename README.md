@@ -2485,20 +2485,6 @@ test: add allocation solver tests
 
 ---
 
-## License
-
-[Your License Here]
-
-## Support
-
-For issues, feature requests, or questions:
-
-- GitHub Issues: [Project Issues](https://github.com/your-org/traffic-forecasting/issues)
-- Email: traffic-team@your-org.com
-- Slack: #traffic-forecasting
-
----
-
 ## Changelog
 
 ### v0.4.0 (Current)
