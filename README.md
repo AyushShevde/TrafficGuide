@@ -1,5 +1,37 @@
 # Bengaluru Traffic Congestion Forecasting System - MVP
 
+---
+
+## 👥 Team
+
+### Team Members
+
+| 👤 Name | 💼 Role | 🎯 Responsibility |
+|---------|---------|------------------|
+| **Yash Sonalekar** | Lead Developer & Architect | Backend architecture, ML integration, API design, system optimization |
+| **Nishant Gawande** | Full-Stack Engineer | Database design, data pipeline, schema optimization, integration layer |
+| **Ayush Shevde** | Data & ML Engineer | ML model development, feature engineering, prediction pipeline, model monitoring |
+
+### Team Synopsis
+
+TrafficGuide is a collaborative effort by three engineers passionate about solving Bengaluru's traffic congestion problem through data-driven insights. 
+
+**Our Mission**: Build an intelligent traffic management system that predicts incident impacts and optimizes resource deployment to minimize congestion and improve emergency response times.
+
+**Our Approach**:
+- 🤖 **ML-Powered Predictions**: Leverage historical data to forecast incident severity and duration with high accuracy
+- 🗺️ **Geographic Optimization**: Use spatial analysis and OR-Tools optimization to find optimal control points and allocate resources intelligently
+- 📊 **Continuous Learning**: Build a feedback loop where field officer inputs improve model accuracy over time
+- 🏗️ **Scalable Architecture**: Design for multi-city deployment with graceful degradation and offline capabilities
+
+**Tech Expertise**: 
+- Backend: Python, FastAPI, PostgreSQL, PostGIS
+- ML: XGBoost, LightGBM, scikit-learn, survival analysis
+- Optimization: Google OR-Tools, geospatial analysis with OSMNX
+- DevOps: Docker, multi-tenancy patterns, monitoring & observability
+
+---
+
 ## 📋 Table of Contents
 
 - [Overview](#overview)
