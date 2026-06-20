@@ -8,7 +8,7 @@ graph TB
 
     subgraph DataLayer["💾 DATA LAYER"]
         PostgreSQL["PostgreSQL 15<br/>+ PostGIS"]
-        JSONL["JSONL Files<br/>(Offline Fallback)"]
+        JSONL["JSONL Files<br/>(Fallback)"]
         Cache["In-Memory Cache<br/>(Forecast, Plans)"]
     end
 
