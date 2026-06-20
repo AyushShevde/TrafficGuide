@@ -1,0 +1,255 @@
+graph TB
+    subgraph DataSources["📥 DATA SOURCES"]
+        CSV["CSV Files<br/>(Astram Exports)"]
+        LiveFeeds["Live Feeds<br/>(Google Maps, CCTV)"]
+        PlannedEvents["Planned Events<br/>(Permits, VIP)"]
+        Weather["Weather API<br/>(Rainfall, Temp)"]
+    end
+
+    subgraph DataLayer["💾 DATA LAYER"]
+        PostgreSQL["PostgreSQL 15<br/>+ PostGIS"]
+        JSONL["JSONL Files<br/>(Offline Fallback)"]
+        Cache["In-Memory Cache<br/>(Forecast, Plans)"]
+    end
+
+    subgraph LoadData["🔄 DATA INGESTION"]
+        LoadCSV["load_data.py<br/>━━━━━━━━━━━<br/>• Parse & normalize<br/>• Deduplicate<br/>• Infer zones<br/>• Seed stations"]
+    end
+
+    subgraph APIOuter["🌐 API LAYER - FastAPI"]
+        APIServer["FastAPI Server<br/>:8000"]
+        CORS["CORS Middleware<br/>(Multi-Origin)"]
+        Auth["Multi-Tenancy<br/>Context<br/>(X-Tenant, X-User)"]
+        RBAC["Role-Based<br/>Access Control<br/>(RBAC)"]
+    end
+
+    subgraph MLLayer["🤖 ML FORECASTING LAYER"]
+        PredictPy["predict.py<br/>━━━━━━━━━━━━<br/>1. Load ML Artifacts<br/>(LRU Cached)"]
+
+        FeatureClean["feature_cleaning.py<br/>━━━━━━━━━━━━<br/>• Normalize event_cause<br/>• Normalize categories<br/>• Encode booleans"]
+
+        BuildFeatures["Build Feature Frame<br/>━━━━━━━━━━━<br/>hour_of_day, day_of_week<br/>event_type, corridor<br/>zone, police_station"]
+
+        SeverityModel["Severity Model<br/>(XGBoost)<br/>━━━━━━━━━<br/>P(HIGH severity)"]
+
+        DurationModels["Duration Models<br/>(LightGBM)<br/>━━━━━━━━━<br/>Q25, Q50, Q75<br/>+ Survival Adjustment"]
+
+        RiskDensity["Risk Density<br/>Heatmap<br/>━━━━━━━━<br/>Corridor × Hour<br/>× Day_of_Week"]
+
+        OperationalMetrics["Operational Metrics<br/>━━━━━━━━━━━━<br/>• Expected delay<br/>• Queue length<br/>• Personnel demand<br/>• Confidence level"]
+
+        IntegrationContext["integrations.py<br/>━━━━━━━━━<br/>Live GPS speeds<br/>Vehicle counts<br/>Weather data<br/>Public advisories"]
+    end
+
+    subgraph PlanningLayer["🗺️ PLANNING LAYER"]
+        GenPlan["generate_plan.py<br/>━━━━━━━━━━━━<br/>ORCHESTRATOR"]
+
+        RoadGraph["road_graph.py<br/>━━━━━━━━━<br/>• Load OSM Graph<br/>• Cache locally<br/>• Demo mode"]
+
+        ControlPoints["control_points.py<br/>━━━━━━━━━━━━<br/>Find optimal positions<br/>Search radius: 800-1200m<br/>Prefer arterials<br/>Limit: 3-5 points"]
+
+        GeoUtils["geo_utils.py<br/>━━━━━━━<br/>• Haversine distance<br/>• Nearest node<br/>• Lat/Lon extraction"]
+
+        ResourceSizing["resource_sizing.py<br/>━━━━━━━━━━━━<br/>Calculate resources<br/>per control point<br/>Severity modifiers<br/>Event-type caps"]
+
+        Diversion["diversion.py<br/>━━━━━━━<br/>Compute alternative<br/>routes to shift traffic"]
+    end
+
+    subgraph AllocationLayer["⚙️ OPTIMIZATION LAYER"]
+        AllocPy["allocation.py<br/>━━━━━━━━━"]
+
+        DistMatrix["Distance Matrix<br/>Control Points<br/>×<br/>Police Stations"]
+
+        OrTools["OR-Tools CBC Solver<br/>━━━━━━━━━━━━<br/>minimize: Σ(dist × personnel)<br/>subject to: capacity,<br/>demand, radius constraints"]
+
+        GreedyFallback["Greedy Fallback<br/>━━━━━━━━━━<br/>Nearest-first<br/>allocation<br/>(if solver unavailable)"]
+
+        Barricades["Allocate Barricades<br/>━━━━━━━━<br/>Simpler problem<br/>Always greedy"]
+    end
+
+    subgraph WorkflowLayer["📋 WORKFLOW LAYER"]
+        Workflow["workflow.py<br/>━━━━━━━━━"]
+
+        PlanRecord["Plan Record<br/>Creation<br/>━━━━━━━━<br/>plan_id, version=1<br/>status=draft<br/>approval_chain"]
+
+        Approval["Plan Approval<br/>Workflow<br/>━━━━━━━━<br/>draft → submitted<br/>→ approved → activated<br/>→ closed"]
+
+        AuditLog["Audit Logging<br/>━━━━━━━━<br/>Action: plan.created<br/>Resource: plan_id<br/>Actor: user_id<br/>Timestamp"]
+    end
+
+    subgraph FeedbackLoop["📊 FEEDBACK & LEARNING"]
+        FeedbackCapture["Feedback Capture<br/>━━━━━━━━━<br/>POST /feedback<br/>━━━<br/>• actual_duration<br/>• officer_rating<br/>• personnel_adjusted<br/>• plan_accepted"]
+
+        FieldStatus["Field Status<br/>Updates<br/>━━━━━━━━<br/>Real-time location<br/>Photo/notes<br/>Control point status"]
+
+        FeedbackTable["Feedback Table<br/>━━━━━━━━<br/>Store predictions<br/>vs. actuals<br/>Enables drift detection"]
+
+        ModelRetraining["Model Retraining<br/>train_models.py<br/>━━━━━━━━━━<br/>Offline process<br/>Uses feedback data<br/>Regenerates artifacts"]
+    end
+
+    subgraph Execution["🚀 EXECUTION & MONITORING"]
+        FieldOfficers["Field Officers<br/>(Mobile App)<br/>━━━━━━━━"]
+
+        Commands["Command Center<br/>(Web Dashboard)<br/>━━━━━━━━"]
+
+        WebSocket["WebSocket /ws/live<br/>━━━━━━━━━<br/>Broadcast every 5s<br/>Metrics + new incidents"]
+    end
+
+    subgraph Observability["📈 OBSERVABILITY"]
+        Metrics["metrics.py<br/>━━━━━━━━<br/>Active incidents<br/>Personnel deployed<br/>Forecast accuracy<br/>ROI metrics"]
+
+        Monitoring["Drift Detection<br/>━━━━━━━━<br/>model_monitoring.py<br/>━━━━━━━━<br/>Compare predicted<br/>vs. actual<br/>Recommend retrain"]
+
+        HealthCheck["Health Check<br/>platform_ops.py<br/>━━━━━━━━<br/>DB connectivity<br/>Integration status<br/>Uptime"]
+    end
+
+    subgraph Storage["🗄️ PERSISTENT STORAGE"]
+        EventsTable["events table<br/>WITH geom"]
+        StationsTable["police_stations table"]
+        FeedbackTable2["feedback table"]
+        WorkflowTable["plan_workflows table"]
+        AuditTable["audit_log table"]
+        FieldStatusTable["field_status_updates table"]
+    end
+
+    subgraph ModelArtifacts["🧠 ML ARTIFACTS"]
+        SeverityArtifact["severity_model.pkl<br/>(XGBoost)"]
+        DurationArtifacts["duration_q25,50,75.pkl<br/>(LightGBM)"]
+        RiskParquet["risk_density.parquet"]
+        SurvivalParquet["survival_table.parquet"]
+    end
+
+    %% Data Sources → Data Layer
+    CSV --> LoadCSV
+    LiveFeeds --> IntegrationContext
+    PlannedEvents --> IntegrationContext
+    Weather --> IntegrationContext
+
+    LoadCSV --> PostgreSQL
+    LoadCSV --> JSONL
+
+    %% Data Layer → API
+    PostgreSQL --> APIServer
+    JSONL --> APIServer
+    Cache --> APIServer
+
+    %% API → Context
+    APIServer --> CORS
+    APIServer --> Auth
+    Auth --> RBAC
+
+    %% ML Components Chain
+    APIServer --> PredictPy
+    PredictPy --> FeatureClean
+    FeatureClean --> BuildFeatures
+    BuildFeatures --> SeverityModel
+    BuildFeatures --> DurationModels
+    BuildFeatures --> RiskDensity
+    SeverityModel --> OperationalMetrics
+    DurationModels --> OperationalMetrics
+    RiskDensity --> OperationalMetrics
+    IntegrationContext --> OperationalMetrics
+
+    %% ML → Cache
+    OperationalMetrics --> Cache
+
+    %% Planning Chain
+    Cache --> GenPlan
+    GenPlan --> RoadGraph
+    GenPlan --> ControlPoints
+    ControlPoints --> GeoUtils
+    GeoUtils --> DistMatrix
+    GenPlan --> ResourceSizing
+    GenPlan --> Diversion
+
+    %% Planning → Allocation
+    ResourceSizing --> AllocPy
+    DistMatrix --> AllocPy
+    AllocPy --> OrTools
+    OrTools --> GreedyFallback
+    AllocPy --> Barricades
+
+    %% Allocation → Workflow
+    GreedyFallback --> Workflow
+    Barricades --> Workflow
+    OrTools --> Workflow
+
+    %% Workflow
+    Workflow --> PlanRecord
+    PlanRecord --> Approval
+    Approval --> AuditLog
+
+    %% Workflow → Storage
+    PlanRecord --> WorkflowTable
+    AuditLog --> AuditTable
+
+    %% Execution
+    Approval --> FieldOfficers
+    Approval --> Commands
+    Commands --> WebSocket
+
+    %% Feedback Path
+    FieldOfficers --> FeedbackCapture
+    FieldOfficers --> FieldStatus
+    Commands --> FeedbackCapture
+
+    FeedbackCapture --> FeedbackTable2
+    FieldStatus --> FieldStatusTable
+
+    %% Storage
+    EventsTable --> PostgreSQL
+    StationsTable --> PostgreSQL
+    FeedbackTable2 --> PostgreSQL
+    WorkflowTable --> PostgreSQL
+    AuditTable --> PostgreSQL
+    FieldStatusTable --> PostgreSQL
+
+    %% Models
+    SeverityArtifact -.-> PredictPy
+    DurationArtifacts -.-> PredictPy
+    RiskParquet -.-> RiskDensity
+    SurvivalParquet -.-> DurationModels
+
+    %% Feedback → Retraining → Models
+    FeedbackTable2 --> ModelRetraining
+    ModelRetraining -.-> SeverityArtifact
+    ModelRetraining -.-> DurationArtifacts
+    ModelRetraining -.-> RiskParquet
+    ModelRetraining -.-> SurvivalParquet
+
+    %% Observability
+    APIServer --> Metrics
+    FeedbackTable2 --> Monitoring
+    PostgreSQL --> HealthCheck
+
+    %% Real-time Updates
+    Metrics --> WebSocket
+
+    %% Loop closure
+    ModelRetraining -.->|Next forecast uses updated models| PredictPy
+
+    classDef dataSource fill:#e1f5ff,stroke:#01579b,stroke-width:2px,color:#000
+    classDef dataLayer fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
+    classDef api fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
+    classDef ml fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px,color:#000
+    classDef planning fill:#fce4ec,stroke:#880e4f,stroke-width:2px,color:#000
+    classDef optimization fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    classDef workflow fill:#ede7f6,stroke:#311b92,stroke-width:2px,color:#000
+    classDef feedback fill:#f1f8e9,stroke:#33691e,stroke-width:2px,color:#000
+    classDef execution fill:#e0f2f1,stroke:#004d40,stroke-width:2px,color:#000
+    classDef observability fill:#fbe9e7,stroke:#bf360c,stroke-width:2px,color:#000
+    classDef storage fill:#eceff1,stroke:#263238,stroke-width:2px,color:#000
+    classDef models fill:#f0f4c3,stroke:#558b2f,stroke-width:2px,color:#000
+
+    class CSV,LiveFeeds,PlannedEvents,Weather dataSource
+    class PostgreSQL,JSONL,Cache dataLayer
+    class APIServer,CORS,Auth,RBAC api
+    class PredictPy,FeatureClean,BuildFeatures,SeverityModel,DurationModels,RiskDensity,OperationalMetrics,IntegrationContext ml
+    class GenPlan,RoadGraph,ControlPoints,GeoUtils,ResourceSizing,Diversion planning
+    class AllocPy,DistMatrix,OrTools,GreedyFallback,Barricades optimization
+    class Workflow,PlanRecord,Approval,AuditLog workflow
+    class FeedbackCapture,FieldStatus,FeedbackTable,ModelRetraining feedback
+    class FieldOfficers,Commands,WebSocket execution
+    class Metrics,Monitoring,HealthCheck observability
+    class EventsTable,StationsTable,FeedbackTable2,WorkflowTable,AuditTable,FieldStatusTable storage
+    class SeverityArtifact,DurationArtifacts,RiskParquet,SurvivalParquet models
