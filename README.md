@@ -8,9 +8,11 @@
 
 | 👤 Name | 💼 Role | 🎯 Responsibility |
 |---------|---------|------------------|
-| **Yash Sonalekar** | Lead Developer & Architect | Backend architecture, ML integration, API design, system optimization |
-| **Nishant Gawande** | Full-Stack Engineer | Database design, data pipeline, schema optimization, integration layer |
+| **Nishant Gawande** | Full-Stack Engineer | Database design, data pipeline, schema design, integration layer |
 | **Ayush Shevde** | Data & ML Engineer | ML model development, feature engineering, prediction pipeline, model monitoring |
+| **Yash Sonalekar** | System Design, Documentation, Refactoring, Data Preprocessing, System Diagrams, Research|
+
+
 
 ### Team Synopsis
 
