@@ -1251,7 +1251,13 @@ def get_field_status(event_id: str | None = None, station: str | None = None) ->
 
 @app.websocket("/ws/live")
 async def websocket_live(websocket: WebSocket) -> None:
-    await websocket.accept()
+    try:
+        await websocket.accept()
+    except Exception as e:
+        print(f"WebSocket accept error: {e}")
+        await websocket.close(code=1000)
+        return
+
     previous_active_ids: set[str] = set()
     try:
         while True:
