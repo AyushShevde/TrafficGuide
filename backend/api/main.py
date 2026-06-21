@@ -135,6 +135,17 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def websocket_cors_middleware(request: Request, call_next):
+    if request.url.path == "/ws/live":
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
+    return await call_next(request)
+
 _engine: Engine | None = None
 _engine_error: str | None = None
 STARTED_AT = datetime.now(UTC)
