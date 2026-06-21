@@ -121,30 +121,33 @@ class FieldStatusRequest(BaseModel):
     photo_url: str | None = None
 
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title="Bengaluru Traffic Forecasting MVP API",
     version="0.4.0",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=".*",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-)
-
-
 @app.middleware("http")
-async def websocket_cors_middleware(request: Request, call_next):
-    if request.url.path == "/ws/live":
-        response = await call_next(request)
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "*"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        return response
-    return await call_next(request)
+async def cors_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Origin, Accept, X-Tenant-Id, X-User-Id, X-User-Role"
+    response.headers["Access-Control-Max-Age"] = "3600"
+    return response
+
+@app.options("{path_name:path}")
+async def preflight(path_name: str):
+    return {
+        "statusCode": 200,
+        "headers": {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With, Origin, Accept, X-Tenant-Id, X-User-Id, X-User-Role",
+        }
+    }
 
 _engine: Engine | None = None
 _engine_error: str | None = None
