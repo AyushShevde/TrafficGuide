@@ -135,6 +135,7 @@ app.add_middleware(
         "http://127.0.0.1",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
+        "https://traffic-guide-996d.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
