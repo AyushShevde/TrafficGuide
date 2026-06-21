@@ -130,13 +130,24 @@ app = FastAPI(
 
 @app.middleware("http")
 async def cors_middleware(request: Request, call_next):
+    origin = request.headers.get("origin", "*")
+
     if request.method == "OPTIONS":
-        return Response(status_code=200)
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With, Origin, Accept, X-Tenant-Id, X-User-Id, X-User-Role, Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version",
+                "Access-Control-Max-Age": "3600",
+            }
+        )
+
     response = await call_next(request)
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Origin, Accept, X-Tenant-Id, X-User-Id, X-User-Role"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Origin, Accept, X-Tenant-Id, X-User-Id, X-User-Role, Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version"
     response.headers["Access-Control-Max-Age"] = "3600"
     return response
 
