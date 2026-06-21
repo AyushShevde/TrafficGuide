@@ -128,6 +128,21 @@ app = FastAPI(
     version="0.4.0",
 )
 
+
+class WebSocketCORSMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            origin = dict(scope.get("headers", [])).get(b"origin", b"*").decode()
+            scope["client"] = ("127.0.0.1", 0)
+
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(WebSocketCORSMiddleware)
+
 @app.middleware("http")
 async def cors_middleware(request: Request, call_next):
     origin = request.headers.get("origin", "*")
