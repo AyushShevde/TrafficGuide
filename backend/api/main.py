@@ -140,14 +140,14 @@ async def cors_middleware(request: Request, call_next):
 
 @app.options("{path_name:path}")
 async def preflight(path_name: str):
-    return {
-        "statusCode": 200,
-        "headers": {
+    return Response(
+        status_code=200,
+        headers={
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
             "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With, Origin, Accept, X-Tenant-Id, X-User-Id, X-User-Role",
         }
-    }
+    )
 
 _engine: Engine | None = None
 _engine_error: str | None = None
