@@ -121,50 +121,23 @@ class FieldStatusRequest(BaseModel):
     photo_url: str | None = None
 
 
-from fastapi.middleware.cors import CORSMiddleware
-
 app = FastAPI(
     title="Bengaluru Traffic Forecasting MVP API",
     version="0.4.0",
 )
 
+_cors_origins_raw = os.environ.get("CORS_ALLOWED_ORIGINS", "*").strip()
+_cors_origins = ["*"] if _cors_origins_raw in {"", "*"} else [
+    origin.strip() for origin in _cors_origins_raw.split(",") if origin.strip()
+]
 
-class WebSocketCORSMiddleware:
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "websocket":
-            origin = dict(scope.get("headers", [])).get(b"origin", b"*").decode()
-            scope["client"] = ("127.0.0.1", 0)
-
-        await self.app(scope, receive, send)
-
-
-app.add_middleware(WebSocketCORSMiddleware)
-
-@app.middleware("http")
-async def cors_middleware(request: Request, call_next):
-    origin = request.headers.get("origin", "*")
-
-    if request.method == "OPTIONS":
-        return Response(
-            status_code=200,
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD",
-                "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With, Origin, Accept, X-Tenant-Id, X-User-Id, X-User-Role, Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version",
-                "Access-Control-Max-Age": "3600",
-            }
-        )
-
-    response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Origin, Accept, X-Tenant-Id, X-User-Id, X-User-Role, Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version"
-    response.headers["Access-Control-Max-Age"] = "3600"
-    return response
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=False if _cors_origins == ["*"] else True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 _engine: Engine | None = None
 _engine_error: str | None = None
@@ -1266,12 +1239,7 @@ def get_field_status(event_id: str | None = None, station: str | None = None) ->
 
 @app.websocket("/ws/live")
 async def websocket_live(websocket: WebSocket) -> None:
-    try:
-        await websocket.accept()
-    except Exception as e:
-        print(f"WebSocket accept error: {e}")
-        await websocket.close(code=1000)
-        return
+    await websocket.accept()
 
     previous_active_ids: set[str] = set()
     try:

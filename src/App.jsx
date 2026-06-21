@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
+import { joinUrl, resolveApiBase, resolveWsBase } from "./lib/apiBase.js";
 
-const API_BASE = "https://trafficguide-production-4c56.up.railway.app";
-const WS_BASE = "wss://trafficguide-production-4c56.up.railway.app";
+const API_BASE = resolveApiBase();
+const WS_BASE = resolveWsBase(API_BASE);
 const BENGALURU_CENTER = [12.9716, 77.5946];
 const TIMELINE_STATES = ["T-24h", "T-2h", "Live", "T+2h"];
 const FIELD_STATION = "Cubbon Park";
 
 function apiPath(path) {
-  return `${API_BASE}${path}`;
+  return joinUrl(API_BASE, path);
 }
 
 async function apiRequest(path, options = {}) {
@@ -990,7 +991,7 @@ function App() {
     let socket = null;
 
     function connect() {
-      socket = new WebSocket(`${WS_BASE}/ws/live`);
+      socket = new WebSocket(joinUrl(WS_BASE, "/ws/live"));
       socket.onopen = () => setApiStatus("live");
       socket.onmessage = (event) => {
         const payload = JSON.parse(event.data);
