@@ -130,6 +130,8 @@ app = FastAPI(
 
 @app.middleware("http")
 async def cors_middleware(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return Response(status_code=200)
     response = await call_next(request)
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Credentials"] = "true"
@@ -137,17 +139,6 @@ async def cors_middleware(request: Request, call_next):
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Origin, Accept, X-Tenant-Id, X-User-Id, X-User-Role"
     response.headers["Access-Control-Max-Age"] = "3600"
     return response
-
-@app.options("{path_name:path}")
-async def preflight(path_name: str):
-    return Response(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With, Origin, Accept, X-Tenant-Id, X-User-Id, X-User-Role",
-        }
-    )
 
 _engine: Engine | None = None
 _engine_error: str | None = None
